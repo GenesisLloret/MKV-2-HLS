@@ -1,4 +1,4 @@
-import sys, os, base64, threading, base64, json, subprocess, winreg, secrets, logging, uvicorn
+import sys, os, base64, threading, base64, json, subprocess, winreg, secrets, logging, uvicorn, requests, zipfile, platform
 from typing import List
 from pydantic import BaseModel
 from PySide6.QtWidgets import QApplication, QMainWindow, QDockWidget
@@ -18,6 +18,55 @@ from fastapi.staticfiles import StaticFiles
 from loads import FAVICON
 from lenguajes import LENGUAJES
 
+# FFMPEG DOWNLOADS
+def verificar_y_descargar_ffmpeg_ffprobe(directorio_bin="bin"):
+    if not os.path.exists(directorio_bin):
+        os.makedirs(directorio_bin)
+    ffmpeg_executable = "ffmpeg" + (".exe" if sys.platform == "win32" else "")
+    ffprobe_executable = "ffprobe" + (".exe" if sys.platform == "win32" else "")
+    ffmpeg_path = os.path.join(directorio_bin, ffmpeg_executable)
+    ffprobe_path = os.path.join(directorio_bin, ffprobe_executable)
+    if os.path.isfile(ffmpeg_path) and os.path.isfile(ffprobe_path):
+        print("ffmpeg y ffprobe ya están disponibles.")
+        return ffmpeg_path, ffprobe_path
+    arquitectura, _ = platform.architecture()
+    os_name = sys.platform
+    arch_map = {
+        ('linux', '32bit'): 'linux-32',
+        ('linux', '64bit'): 'linux-64',
+        ('win32', '32bit'): 'windows-32',
+        ('win32', '64bit'): 'windows-64',
+        ('darwin', '64bit'): 'osx-64',
+    }
+    machine = platform.machine()
+    if 'arm' in machine:
+        arch = 'linux-arm' + ('64' if '64' in machine else 'hf' if '7l' in machine else 'el')
+    else:
+        arch = arch_map.get((os_name, arquitectura))
+        if arch is None:
+            raise RuntimeError(f"Plataforma no soportada: {os_name}, Arquitectura: {arquitectura}")
+    respuesta = requests.get("https://ffbinaries.com/api/v1/version/latest")
+    data = respuesta.json()
+    ffmpeg_url = data['bin'].get(arch, {}).get('ffmpeg')
+    ffprobe_url = data['bin'].get(arch, {}).get('ffprobe')
+    if not ffmpeg_url or not ffprobe_url:
+        raise RuntimeError(f"No se encontraron URLs de descarga para la arquitectura: {arch}")
+    def descargar_y_descomprimir(url, directorio):
+        nombre_zip = os.path.join(directorio, url.split('/')[-1])
+        with requests.get(url, stream=True) as r:
+            r.raise_for_status()
+            with open(nombre_zip, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+        with zipfile.ZipFile(nombre_zip, 'r') as zip_ref:
+            zip_ref.extractall(directorio)
+        os.remove(nombre_zip)
+    descargar_y_descomprimir(ffmpeg_url, directorio_bin)
+    descargar_y_descomprimir(ffprobe_url, directorio_bin)
+    return ffmpeg_path, ffprobe_path
+    
+ffmpeg_path, ffprobe_path = verificar_y_descargar_ffmpeg_ffprobe()
+    
 def resource_path(relative_path):
     try:
         base_path = sys._MEIPASS
@@ -132,7 +181,7 @@ class VideoPath(BaseModel):
 
 # DEFINICIONES
 async def obtener_info_ffprobe(ruta_video: str) -> dict:
-    comando = ['ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', ruta_video]
+    comando = [ffprobe_path, '-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', ruta_video]
     try:
         resultado = subprocess.run(comando, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True, encoding='utf-8')
         return json.loads(resultado.stdout)
@@ -142,7 +191,7 @@ async def obtener_info_ffprobe(ruta_video: str) -> dict:
         raise HTTPException(status_code=500, detail=f"Error de decodificación Unicode: {e}")
     
 async def generar_thumbnail_base64(ruta_video: str, tiempo: str = "00:00:01", tamaño: str = "320x240") -> str:
-    comando = ['ffmpeg','-i', ruta_video,'-ss', tiempo,'-vf', f'scale={tamaño}','-vframes', '1','-f', 'image2pipe','-c:v', 'png','-']
+    comando = [ffmpeg_path,'-i', ruta_video,'-ss', tiempo,'-vf', f'scale={tamaño}','-vframes', '1','-f', 'image2pipe','-c:v', 'png','-']
     try:
         resultado = subprocess.check_output(comando)
         thumbnail_base64 = base64.b64encode(resultado).decode("utf-8")
@@ -255,7 +304,7 @@ async def open_new_window(url: str):
 @app.post("/procesar-video")
 async def procesar_video(video_path: VideoPath, username: str = Depends(get_current_username)):
     file_path = video_path.file_path
-    cmd = ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", file_path]
+    cmd = [ffprobe_path, "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", file_path]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8')
         if result.returncode != 0:
