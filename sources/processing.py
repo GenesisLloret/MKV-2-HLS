@@ -2,7 +2,7 @@ import subprocess
 import base64
 import json
 import asyncio
-from .ffmpeg_utils import ffprobe_path, ffmpeg_path
+from .utils import ffprobe_path, ffmpeg_path
 
 class VideoPath:
     def __init__(self, file_path: str):
